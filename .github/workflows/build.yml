@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream Icarus tag to build (for example v13_0)"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout upstream tag
+        uses: actions/checkout@v4
+        with:
+          repository: steveicarus/iverilog
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1
+          fetch-tags: true
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential autoconf gperf bison flex
+
+      - name: Configure and build
+        run: |
+          sh autoconf.sh
+          ./configure --prefix="$PWD/dist"
+          make -j"$(nproc)"
+          make install
+
+      - name: Check version
+        run: |
+          ./dist/bin/iverilog -V
+          ./dist/bin/vvp -V
+          cat > /tmp/t.v << 'EOF'
+          module t;
+            initial begin
+              $display("icarus ok");
+              $finish;
+            end
+          endmodule
+          EOF
+          ./dist/bin/iverilog -o /tmp/t.vvp /tmp/t.v
+          ./dist/bin/vvp /tmp/t.vvp
+
+      - name: Package
+        run: |
+          tar -C dist -czf icarus-ubuntu-24.04.tar.gz .
+          tar -tzf icarus-ubuntu-24.04.tar.gz | head
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          files: icarus-ubuntu-24.04.tar.gz
+          fail_on_unmatched_files: true
+          body: |
+            Prebuilt Icarus Verilog ${{ inputs.tag }} for ubuntu-24.04.
+            Source: https://github.com/steveicarus/iverilog/tree/${{ inputs.tag }}
+            Archive layout: prefix install (`bin/`, `lib/ivl/`).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
