@@ -4,9 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Upstream Icarus tag to build (for example v13_0)"
+        description: "Release name (upstream tag such as v13_0, or a date such as 2026.11.04)"
         required: true
         type: string
+      ref:
+        description: "Upstream commit, tag, or branch to build. Defaults to tag."
+        required: false
+        type: string
+        default: ""
+      version_tag:
+        description: "VERSION_TAG baked into iverilog -V, for example 2026.11.04-dirty. Empty keeps git-describe."
+        required: false
+        type: string
+        default: ""
+      latest:
+        description: "Mark this release as the repository latest"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -15,11 +30,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout upstream tag
+      - name: Checkout upstream ref
         uses: actions/checkout@v4
         with:
           repository: steveicarus/iverilog
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.ref || inputs.tag }}
           fetch-depth: 1
           fetch-tags: true
 
@@ -27,16 +42,36 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential autoconf gperf bison flex
 
       - name: Configure and build
+        env:
+          VERSION_TAG: ${{ inputs.version_tag }}
         run: |
+          set -euo pipefail
+          make_stamp=()
+          if [ -n "$VERSION_TAG" ]; then
+            case "$VERSION_TAG" in
+              *[!A-Za-z0-9._-]*)
+                echo "version_tag may contain only letters, digits, dot, underscore, and hyphen" >&2
+                exit 1
+                ;;
+            esac
+            printf '#define VERSION_TAG "%s"\n' "$VERSION_TAG" > release_tag.h
+            make_stamp+=(GIT=none)
+          fi
           sh autoconf.sh
           ./configure --prefix="$PWD/dist"
-          make -j"$(nproc)"
-          make install
+          make -j"$(nproc)" "${make_stamp[@]}"
+          make install "${make_stamp[@]}"
 
       - name: Check version
+        env:
+          VERSION_TAG: ${{ inputs.version_tag }}
         run: |
+          set -euo pipefail
           ./dist/bin/iverilog -V
           ./dist/bin/vvp -V
+          if [ -n "$VERSION_TAG" ]; then
+            ./dist/bin/iverilog -V | grep -F "$VERSION_TAG"
+          fi
           cat > /tmp/t.v << 'EOF'
           module t;
             initial begin
@@ -58,11 +93,13 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           name: ${{ inputs.tag }}
+          make_latest: ${{ inputs.latest }}
           files: icarus-ubuntu-24.04.tar.gz
           fail_on_unmatched_files: true
           body: |
             Prebuilt Icarus Verilog ${{ inputs.tag }} for ubuntu-24.04.
-            Source: https://github.com/steveicarus/iverilog/tree/${{ inputs.tag }}
+            Source: https://github.com/steveicarus/iverilog/tree/${{ inputs.ref || inputs.tag }}
+            VERSION_TAG: ${{ inputs.version_tag || 'git-describe' }}
             Archive layout: prefix install (`bin/`, `lib/ivl/`).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
